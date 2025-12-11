@@ -1,4 +1,4 @@
-﻿
+
 <# 
 .SYNOPSIS
   Ninja-tailored script: Get location → build Azure Maps Static Map → save image → output JSON (+ diagnostics)
@@ -6,27 +6,27 @@
 .DESCRIPTION
   1) Tries System.Device.Location.GeoCoordinateWatcher using PositionChanged/StatusChanged events (up to 5 minutes).
   2) Falls back to IP-based geolocation (ipapi.co, then ipinfo.io).
-  3) Optional manual lat/lon.
+  3) Optional manual lat/lon (-Latitude/-Longitude).
   4) Saves static map PNG to a cache folder on the system drive root and prints JSON with redacted URL.
   5) Emits diagnostics: OS type, lfsvc status, consent values (HKCU/HKLM), Wi‑Fi presence/state, run context.
   6) On success, writes a sidecar metadata JSON file next to the PNG.
+  7) Reads Azure Maps key from environment variable $env:AzureMapsKey — no parameter required.
 
 .NOTES
   - PowerShell 5.1+ compatible.
-  - Uses Render v2 Static Map (api-version=2024-04-01) with explicit tilesetId and proper pins grammar (default||lon lat).
+  - Render v2 Static Map (api-version=2024-04-01) with explicit tilesetId and proper pins grammar (default||lon lat).
   - Redacts subscription key in MapUrl for output.
 #>
 
 param(
-    [string]$AzureMapsKey = "YOUR_AZURE_MAPS_KEY_HERE",
     [int]$Zoom = 15,
     [int]$Width = 800,
     [int]$Height = 500,
-    [int]$TimeoutSeconds = 300,            # default to 5 minutes
+    [int]$TimeoutSeconds = 300,            # up to 5 minutes for device location
     [int]$DesiredAccuracyMeters = 50,
     [double]$Latitude,
     [double]$Longitude,
-    [string]$TilesetId = "microsoft.base.road",  # set to 'microsoft.base.aerial' for imagery
+    [string]$TilesetId = "microsoft.base.road",  # 'microsoft.base.aerial' for imagery
     [string]$Language = "en-us",
     [string]$View = "Auto"
 )
@@ -71,7 +71,6 @@ function Get-AzureMapsStaticUrl {
     param(
         [Parameter(Mandatory=$true)][double]$Latitude,
         [Parameter(Mandatory=$true)][double]$Longitude,
-        [Parameter(Mandatory=$true)][string]$SubscriptionKey,
         [int]$Zoom = 15,
         [int]$Width = 800,
         [int]$Height = 500,
@@ -80,8 +79,14 @@ function Get-AzureMapsStaticUrl {
         [string]$View = "Auto"
     )
     # Render v2 Static Map: https://atlas.microsoft.com/map/static?api-version=2024-04-01
-    # Use explicit tilesetId and pins grammar "default||lon lat"
+    # Explicit tilesetId; pins grammar "default||lon lat"
     $apiVersion = "2024-04-01"
+
+    # Read key from env; fail if missing
+    $SubscriptionKey = $env:AzureMapsKey
+    if ([string]::IsNullOrWhiteSpace($SubscriptionKey)) {
+        throw "Azure Maps key not found in environment variable 'AzureMapsKey'."
+    }
 
     $pinsValue      = "default||$Longitude $Latitude"  # double pipes when no style/label segments
     $pinsEncoded    = [System.Uri]::EscapeDataString($pinsValue)
@@ -302,7 +307,7 @@ function Get-CurrentLocationWithGeoWatcherEvents {
     }
 }
 
-# Backward compatibility wrapper: route old name to the events function
+# Backward compatibility wrapper (if a caller uses the old name)
 function Get-CurrentLocationWithGeoWatcher {
     param(
         [int]$TimeoutSeconds = 300,
@@ -374,8 +379,9 @@ $summary = @{
 }
 
 try {
-    if ([string]::IsNullOrWhiteSpace($AzureMapsKey) -or $AzureMapsKey -eq "YOUR_AZURE_MAPS_KEY_HERE") {
-        $summary.Notes += "Missing AzureMapsKey. Provide a valid key or proxy via backend."
+    # Resolve Azure Maps key from environment
+    if ([string]::IsNullOrWhiteSpace($env:AzureMapsKey)) {
+        $summary.Notes += "Azure Maps key not found. Set environment variable 'AzureMapsKey'."
         throw "Azure Maps key not provided."
     }
 
@@ -478,7 +484,7 @@ try {
 
     # Build static map URL (Render v2 with tilesetId + default pin)
     $mapUrlFull = Get-AzureMapsStaticUrl -Latitude $loc.Latitude -Longitude $loc.Longitude `
-        -SubscriptionKey $AzureMapsKey -Zoom $Zoom -Width $Width -Height $Height `
+        -Zoom $Zoom -Width $Width -Height $Height `
         -TilesetId $TilesetId -Language $Language -View $View
 
     $summary.MapUrl = Redact-SubscriptionKeyInUrl -Url $mapUrlFull
